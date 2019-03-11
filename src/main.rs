@@ -31,32 +31,33 @@ fn to_c_string(os_str_buf: &[u8]) -> Result<CString,Box<std::error::Error>> {
     }
 }
 
+
 #[cfg(windows)]
-fn enumerate_volumes() -> Result<i32, Error> {
-    
+fn enumerate_volumes() -> Result<i32, Error> {    
     use winapi::um::handleapi::{INVALID_HANDLE_VALUE, CloseHandle};
     use winapi::um::winnt::{FILE_SHARE_READ, GENERIC_READ};        
-    use winapi::um::fileapi::{CreateFileA, OPEN_EXISTING};        
-    use winapi::um::winbase::{FindFirstVolumeA, FindNextVolumeA};    
+    use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};        
+    use winapi::um::winbase::{FindFirstVolumeW, FindNextVolumeW, FindVolumeClose};
     use std::ptr::null_mut;
 
     const BUFFER_SIZE: usize = 1024;
-    let mut buffer: [u8;BUFFER_SIZE] = [0; BUFFER_SIZE];
+    let mut buffer: [u16;BUFFER_SIZE] = [0; BUFFER_SIZE];
     
-    println!("calling FindFirstVolumeA");
+    println!("calling FindFirstVolumeW");
 
     let h_search = unsafe {
-        FindFirstVolumeA(buffer.as_mut_ptr() as *mut i8, BUFFER_SIZE as u32)
+        FindFirstVolumeW(buffer.as_mut_ptr(), BUFFER_SIZE as u32)
     };
 
     if h_search == INVALID_HANDLE_VALUE {
         println!("got invalid handle enumerating volumes");
         return Err(Error::last_os_error());
     } else {        
-        let c_string = to_c_string(&buffer).unwrap();
-        println!("got volume: {:?}",c_string);
-        println!("last OS error: {:?}", Error::last_os_error());
+        let os_string = OsString::from_wide(&buffer);        
+        println!("got volume: {:?}",os_string);        
         loop {
+            
+            /*
             let h_file = unsafe { CreateFileA(
                 c_string.clone().into_raw(),
                 GENERIC_READ,
@@ -73,17 +74,18 @@ fn enumerate_volumes() -> Result<i32, Error> {
                     println!("succeeded to open volume: {:?}", c_string);
                     unsafe { CloseHandle(h_file) };
                 }
+            */   
 
-            let ret = unsafe { FindNextVolumeA(h_search, buffer.as_mut_ptr() as *mut i8, BUFFER_SIZE as u32) };
+            let ret = unsafe { FindNextVolumeW(h_search, buffer.as_mut_ptr(), BUFFER_SIZE as u32) };
             if ret == 0 {
                 break;                
             } else {
-                let c_string = to_c_string(&buffer).unwrap();
-                println!("got volume: {:?}",c_string); // );
+                let os_string = OsString::from_wide(&buffer);
+                println!("got volume: {:?}",os_string);
             }
         }
 
-        unsafe { CloseHandle(h_search) };
+        unsafe { FindVolumeClose(h_search) };
     }
     
     
@@ -92,10 +94,11 @@ fn enumerate_volumes() -> Result<i32, Error> {
 
 
 #[cfg(not(windows))]
-fn print_message(msg: &str) -> Result<(), Error> {
-    println!("not on windows", msg);
+fn print_message() -> Result<(), Error> {
+    println!("not on windows");
     Ok(())
 }
+
 fn main() {
     enumerate_volumes().unwrap();
 }
