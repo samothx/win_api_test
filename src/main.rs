@@ -38,5 +38,5 @@ fn main() {
         .init()
         .unwrap();
 
-    test_win_api::enumerate_volumes().unwrap();
+    test_win_api::enumerate_drives().unwrap();
 }

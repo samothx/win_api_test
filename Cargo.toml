@@ -10,3 +10,5 @@ winapi = { version = "0.3", features = ["winuser", "winbase", "handleapi", "file
 log = "*"
 stderrlog = "*"
 clap = "*"
+lazy_static = "*"
+regex = "1"

@@ -5,10 +5,50 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
-use log::{error,warn, trace};
+use log::{warn, info, trace};
+use lazy_static::lazy_static;
+use regex::Regex;
+use std::rc::Rc;
+use std::collections::hash_map::HashMap;
 
 const MODULE:&str = "test_win_api";
 
+#[derive(Debug)]
+enum StorageDevice {
+    PhysicalDrive(PhysicalDriveInfo),
+    HarddiskVolume(HarddiskVolumeInfo),
+    HarddiskPartition(HarddiskPartitionInfo),
+    Volume(VolumeInfo),    
+}
+
+#[derive(Debug)]
+pub struct PhysicalDriveInfo {
+    dev_name: String,
+    index: u64,    
+    device: String,
+}
+
+#[derive(Debug)]
+pub struct HarddiskVolumeInfo {
+    dev_name: String,
+    index: u64,
+    device: String,
+}
+
+#[derive(Debug)]
+pub struct HarddiskPartitionInfo {
+    dev_name: String,
+    hd_index: u64,
+    part_index: u64,
+    device: String,
+}
+
+#[derive(Debug)]
+pub struct VolumeInfo {
+    dev_name: String,
+    uuid: String,    
+    device: String,
+}
 
 /*
 #[cfg(windows)]
@@ -176,4 +216,115 @@ pub fn enumerate_volumes() -> Result<i32, Box<std::error::Error>> {
     
     Ok(0)
 }
+
+#[cfg(windows)]
+pub fn enumerate_drives() -> Result<(),Box<std::error::Error>> {    
+    trace!("{}::enumerate_drives: entered" , MODULE);
+
+    lazy_static! {
+        static ref RE_HDV: Regex = Regex::new(r"^HarddiskVolume([0-9]+)$").unwrap();
+        static ref RE_PD: Regex = Regex::new(r"^PhysicalDrive([0-9]+)$").unwrap();
+        static ref RE_VOL: Regex = Regex::new(r"^Volume\{([0-9a-z\-]+)\}$").unwrap();
+        static ref RE_HDPART: Regex = Regex::new(r"^Harddisk([0-9]+)Partition([0-9]+)$").unwrap();
+    }
+
+    let mut dev_list: Vec<Rc<StorageDevice>> = Vec::new();
+    let mut dev_map: HashMap<String,Rc<StorageDevice>> = HashMap::new();
+
+    match query_dos_device(None) { 
+        Ok(dl) => {
+            for device in dl {
+                trace!("{}::enumerate_drives: got device name: {}",MODULE, device);
+                let mut storage_device: Option<StorageDevice> = None;
+                
+                loop {  
+
+                    if let Some(c) = RE_HDV.captures(&device) {                        
+                        let ms_device_name = match query_dos_device(Some(&device))?.get(0) {
+                            Some(s) => s.clone(),
+                            None => return Err(Box::new(Error::from(ErrorKind::NotFound))),
+                        };
+                        storage_device = Some(
+                            StorageDevice::HarddiskVolume(
+                                HarddiskVolumeInfo{
+                                    dev_name: device.clone(),
+                                    index: c.get(1).unwrap().as_str().parse::<u64>().unwrap(),
+                                    device: ms_device_name,
+                                }
+                        ));
+                        break;
+                    } 
+
+                    if let Some(c) = RE_PD.captures(&device) {                    
+                        let ms_device_name = match query_dos_device(Some(&device))?.get(0) {
+                            Some(s) => s.clone(),
+                            None => return Err(Box::new(Error::from(ErrorKind::NotFound))),
+                        };
+                        storage_device = Some(
+                            StorageDevice::PhysicalDrive(
+                                PhysicalDriveInfo{
+                                    dev_name: device.clone(),
+                                    index: c.get(1).unwrap().as_str().parse::<u64>().unwrap(),
+                                    device: ms_device_name,
+                                }
+                        ));
+                        break;
+                    } 
+
+                    if let Some(c) = RE_VOL.captures(&device) {                    
+                        let ms_device_name = match query_dos_device(Some(&device))?.get(0) {
+                            Some(s) => s.clone(),
+                            None => return Err(Box::new(Error::from(ErrorKind::NotFound))),
+                        };
+                        storage_device = Some(
+                            StorageDevice::Volume(
+                                VolumeInfo{
+                                    dev_name: device.clone(),
+                                    uuid: String::from(c.get(1).unwrap().as_str()),
+                                    device: ms_device_name,
+                                }
+                        ));
+                        break;
+                    } 
+
+                    if let Some(c) = RE_HDPART.captures(&device) {                    
+                        let ms_device_name = match query_dos_device(Some(&device))?.get(0) {
+                            Some(s) => s.clone(),
+                            None => return Err(Box::new(Error::from(ErrorKind::NotFound))),
+                        };
+                        storage_device = Some(
+                            StorageDevice::HarddiskPartition(
+                                HarddiskPartitionInfo{
+                                    dev_name: device.clone(),
+                                    hd_index: c.get(1).unwrap().as_str().parse::<u64>().unwrap(),
+                                    part_index: c.get(2).unwrap().as_str().parse::<u64>().unwrap(),
+                                    device: ms_device_name,
+                                }
+                        ));
+                        break;
+                    } 
+
+                    break;
+                }
+
+                if let Some(s) = storage_device {
+                    info!("{}::enumerate_drives: adding device: {:?}", MODULE, s);                                        
+                    let rc_dev = Rc::new(s);
+                    match dev_map.insert(device.clone(),rc_dev.clone()) {
+                        Some(_d) => return Err(Box::new(Error::from(ErrorKind::AlreadyExists))),
+                        None => (),
+                    };                    
+
+                    dev_list.push(rc_dev);
+                }
+            }            
+        },
+        Err(why) => {
+            println!("query_dos_device retured error: {:?}", why);
+        }
+    };
+
+    Ok(())
+}    
+
 
