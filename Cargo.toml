@@ -7,3 +7,6 @@ edition = "2018"
 [dependencies]
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "winbase", "handleapi", "fileapi"] }
+log = "*"
+stderrlog = "*"
+clap = "*"
