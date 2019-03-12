@@ -2,12 +2,13 @@
 use std::io::Error;
 use std::ffi::CString;
 use std::io::ErrorKind;
-
+use std::ffi::{OsString, OsStr};
+use std::ptr::null_mut;
+use std::os::windows::prelude::*;
+use std::iter::once;
 
 #[cfg(windows)]
 fn print_message(msg: &str) -> Result<i32, Error> {
-    use std::ffi::OsStr;
-    use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null_mut;
     use winapi::um::winuser::{MB_OK, MessageBoxW};
@@ -30,20 +31,72 @@ fn to_c_string(os_str_buf: &[u8]) -> Result<CString,Box<std::error::Error>> {
         None => return Err(Box::new(Error::from(ErrorKind::InvalidInput)))
     }
 }
+#[cfg(windows)]
+fn to_os_string(os_str_buf: &[u16]) -> Result<OsString,Box<std::error::Error>> {            
+    match os_str_buf.iter().position(|&x| x == 0 ) {        
+        Some(i) => Ok(OsString::from_wide(&os_str_buf[0..i])),
+        None => return Err(Box::new(Error::from(ErrorKind::InvalidInput)))
+    }
+}
+
+fn to_string(os_str_buf: &[u16]) -> Result<String,Box<std::error::Error>> {            
+    match os_str_buf.iter().position(|&x| x == 0 ) {        
+        Some(i) => Ok(String::from_utf16_lossy(&os_str_buf[0..i])),
+        None => return Err(Box::new(Error::from(ErrorKind::InvalidInput)))
+    }
+}
+
+
+fn to_string_list(os_str_buf: &[u16]) -> Result<Vec<String>,Box<std::error::Error>> {            
+    let mut str_list: Vec<String> = Vec::new();
+    let mut start: usize = 0;
+    for curr in os_str_buf.iter().enumerate() {
+        if *curr.1 == 0 {
+            if  start < curr.0 {
+                match to_string(&os_str_buf[start .. curr.0 + 1]) {
+                    Ok(s) =>  { 
+                        str_list.push(s);
+                        start = curr.0 + 1;
+                    },
+                    Err(why) => return Err(why),
+                }                
+            } else {
+                // TODO: might be better to allways terminate                
+                break;
+            }            
+        }
+    }
+    Ok(str_list)
+}
+
+
+fn clip(os_str_buf: &[u16],start: usize,end: usize) -> Result<String,Box<std::error::Error>> {            
+    match os_str_buf.iter().position(|&x| x == 0 ) {                
+        Some(i) => {
+            if i <= (start + end) {
+                Ok(String::new())
+            } else {
+                Ok(String::from_utf16_lossy(&os_str_buf[start..(i - end)]))
+            }
+        },
+        None => return Err(Box::new(Error::from(ErrorKind::InvalidInput)))
+    }
+}
 
 
 #[cfg(windows)]
 fn enumerate_volumes() -> Result<i32, Error> {    
+
     use winapi::um::handleapi::{INVALID_HANDLE_VALUE, CloseHandle};
     use winapi::um::winnt::{FILE_SHARE_READ, GENERIC_READ};        
-    use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};        
-    use winapi::um::winbase::{FindFirstVolumeW, FindNextVolumeW, FindVolumeClose};
-    use std::ptr::null_mut;
+    use winapi::um::fileapi::{CreateFileW, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, QueryDosDeviceW, OPEN_EXISTING};        
+    // use winapi::um::winbase::{FindFirstVolumeA, FindNextVolumeA};
+    
 
-    const BUFFER_SIZE: usize = 1024;
+    const BUFFER_SIZE: usize = 2048;
     let mut buffer: [u16;BUFFER_SIZE] = [0; BUFFER_SIZE];
     
-    println!("calling FindFirstVolumeW");
+    // println!("calling FindFirstVolumeW");
 
     let h_search = unsafe {
         FindFirstVolumeW(buffer.as_mut_ptr(), BUFFER_SIZE as u32)
@@ -53,9 +106,28 @@ fn enumerate_volumes() -> Result<i32, Error> {
         println!("got invalid handle enumerating volumes");
         return Err(Error::last_os_error());
     } else {        
-        let os_string = OsString::from_wide(&buffer);        
-        println!("got volume: {:?}",os_string);        
         loop {
+            let vol_name = to_string(&buffer).unwrap();        
+            println!("got volume: {}",vol_name);
+
+            let dev_name = if vol_name.starts_with("\\\\?\\") && vol_name.ends_with("\\") {
+                clip(&buffer, 4, 1).unwrap()
+            } else { 
+                vol_name.clone() 
+            };
+
+            println!("got dev_name: {}",dev_name);
+
+            let dev_path: Vec<u16> = OsStr::new(&dev_name).encode_wide().chain(once(0)).collect();
+
+            let ret = unsafe { QueryDosDeviceW(dev_path.as_ptr(),buffer.as_mut_ptr(),BUFFER_SIZE as u32) } ;
+            if ret != 0 {
+                for device in to_string_list(&buffer).unwrap().iter() {
+                    println!("got device name: {}",device);
+                }
+            } else {
+                println!("QueryDosDeviceW returned : {}",ret);
+            }
             
             /*
             let h_file = unsafe { CreateFileA(
@@ -79,10 +151,7 @@ fn enumerate_volumes() -> Result<i32, Error> {
             let ret = unsafe { FindNextVolumeW(h_search, buffer.as_mut_ptr(), BUFFER_SIZE as u32) };
             if ret == 0 {
                 break;                
-            } else {
-                let os_string = OsString::from_wide(&buffer);
-                println!("got volume: {:?}",os_string);
-            }
+            } 
         }
 
         unsafe { FindVolumeClose(h_search) };
