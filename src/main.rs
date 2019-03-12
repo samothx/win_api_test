@@ -1,12 +1,13 @@
 #[cfg(windows)] extern crate winapi;
 use std::io::Error;
-use std::ffi::CString;
+//use std::ffi::CString;
 use std::io::ErrorKind;
 use std::ffi::{OsString, OsStr};
 use std::ptr::null_mut;
 use std::os::windows::prelude::*;
 use std::iter::once;
 
+/*
 #[cfg(windows)]
 fn print_message(msg: &str) -> Result<i32, Error> {
     use std::os::windows::ffi::OsStrExt;
@@ -38,6 +39,7 @@ fn to_os_string(os_str_buf: &[u16]) -> Result<OsString,Box<std::error::Error>> {
         None => return Err(Box::new(Error::from(ErrorKind::InvalidInput)))
     }
 }
+*/
 
 fn to_string(os_str_buf: &[u16]) -> Result<String,Box<std::error::Error>> {            
     match os_str_buf.iter().position(|&x| x == 0 ) {        
@@ -69,7 +71,19 @@ fn to_string_list(os_str_buf: &[u16]) -> Result<Vec<String>,Box<std::error::Erro
     Ok(str_list)
 }
 
+fn clip<'a>(clip_str: &'a str, clip_start: &str, clip_end: &str) -> &'a str {            
+    let mut work_str = clip_str;
+    if work_str.starts_with(clip_start) {        
+        work_str = &work_str[clip_start.len()..];
+    }
+    if work_str.ends_with(clip_start) {
+        work_str = &work_str[0..work_str.len()-clip_end.len()];
+    }
 
+    work_str
+}
+
+/*
 fn clip(os_str_buf: &[u16],start: usize,end: usize) -> Result<String,Box<std::error::Error>> {            
     match os_str_buf.iter().position(|&x| x == 0 ) {                
         Some(i) => {
@@ -82,81 +96,83 @@ fn clip(os_str_buf: &[u16],start: usize,end: usize) -> Result<String,Box<std::er
         None => return Err(Box::new(Error::from(ErrorKind::InvalidInput)))
     }
 }
-
+*/
 
 #[cfg(windows)]
-fn enumerate_volumes() -> Result<i32, Error> {    
-
-    use winapi::um::handleapi::{INVALID_HANDLE_VALUE, CloseHandle};
-    use winapi::um::winnt::{FILE_SHARE_READ, GENERIC_READ};        
-    use winapi::um::fileapi::{CreateFileW, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, QueryDosDeviceW, OPEN_EXISTING};        
-    // use winapi::um::winbase::{FindFirstVolumeA, FindNextVolumeA};
-    
-
+fn get_volumes() -> Result<Vec<String>,Box<std::error::Error>> {
+    use winapi::um::handleapi::{INVALID_HANDLE_VALUE};
+    use winapi::um::fileapi::{FindFirstVolumeW, FindNextVolumeW, FindVolumeClose};        
     const BUFFER_SIZE: usize = 2048;
     let mut buffer: [u16;BUFFER_SIZE] = [0; BUFFER_SIZE];
-    
-    // println!("calling FindFirstVolumeW");
+    let mut vol_list: Vec<String> = Vec::new();
 
     let h_search = unsafe {
         FindFirstVolumeW(buffer.as_mut_ptr(), BUFFER_SIZE as u32)
     };
-
-    if h_search == INVALID_HANDLE_VALUE {
-        println!("got invalid handle enumerating volumes");
-        return Err(Error::last_os_error());
-    } else {        
-        loop {
-            let vol_name = to_string(&buffer).unwrap();        
-            println!("got volume: {}",vol_name);
-
-            let dev_name = if vol_name.starts_with("\\\\?\\") && vol_name.ends_with("\\") {
-                clip(&buffer, 4, 1).unwrap()
-            } else { 
-                vol_name.clone() 
-            };
-
-            println!("got dev_name: {}",dev_name);
-
-            let dev_path: Vec<u16> = OsStr::new(&dev_name).encode_wide().chain(once(0)).collect();
-
-            let ret = unsafe { QueryDosDeviceW(dev_path.as_ptr(),buffer.as_mut_ptr(),BUFFER_SIZE as u32) } ;
-            if ret != 0 {
-                for device in to_string_list(&buffer).unwrap().iter() {
-                    println!("got device name: {}",device);
-                }
-            } else {
-                println!("QueryDosDeviceW returned : {}",ret);
-            }
-            
-            /*
-            let h_file = unsafe { CreateFileA(
-                c_string.clone().into_raw(),
-                GENERIC_READ,
-                FILE_SHARE_READ,
-                null_mut(), 
-                OPEN_EXISTING,                
-                0,
-                null_mut()) };
-
-                if h_file == INVALID_HANDLE_VALUE {
-                    println!("failed to open volume: {:?}", c_string);
-                    println!("last OS error: {:?}", Error::last_os_error());
-                } else {
-                    println!("succeeded to open volume: {:?}", c_string);
-                    unsafe { CloseHandle(h_file) };
-                }
-            */   
-
-            let ret = unsafe { FindNextVolumeW(h_search, buffer.as_mut_ptr(), BUFFER_SIZE as u32) };
-            if ret == 0 {
-                break;                
-            } 
-        }
-
-        unsafe { FindVolumeClose(h_search) };
-    }
     
+    if h_search == INVALID_HANDLE_VALUE {        
+        return Err(Box::new(Error::last_os_error()));
+    }
+
+    vol_list.push(to_string(&buffer)?);
+
+    loop {
+        let ret = unsafe { FindNextVolumeW(h_search, buffer.as_mut_ptr(), BUFFER_SIZE as u32) };
+        if ret == 0 {
+            unsafe { FindVolumeClose(h_search) };
+            return Ok(vol_list);
+        }
+        vol_list.push(to_string(&buffer)?);
+    }
+}
+
+
+#[cfg(windows)]
+fn query_dos_device(dev_name: Option<&str>) -> Result<Vec<String>,Box<std::error::Error>> {
+    use winapi::um::fileapi::{ QueryDosDeviceW};        
+    const BUFFER_SIZE: usize = 4096;
+    let mut buffer: [u16;BUFFER_SIZE] = [0; BUFFER_SIZE];
+    let num_tchar = match dev_name {
+        Some(s) => {
+            let dev_path: Vec<u16> = OsStr::new(&s).encode_wide().chain(once(0)).collect();
+            unsafe { QueryDosDeviceW(dev_path.as_ptr(),buffer.as_mut_ptr(),BUFFER_SIZE as u32) } 
+        },
+        None => unsafe { QueryDosDeviceW(null_mut(),buffer.as_mut_ptr(),BUFFER_SIZE as u32) }
+    };
+    
+    if num_tchar > 0 {
+        Ok(to_string_list(&buffer)?)
+    } else {
+       return Err(Box::new(Error::last_os_error()));        
+    }
+}
+
+#[cfg(windows)]
+fn enumerate_volumes() -> Result<i32, Box<std::error::Error>> {    
+    
+    // use winapi::um::winbase::{FindFirstVolumeA, FindNextVolumeA};
+    
+    match query_dos_device(None) { 
+        Ok(sl) => {
+            for device in sl {
+                println!("got device name: {}",device);
+            }
+        },
+        Err(why) => {
+            println!("query_dos_device retured error: {:?}", why);
+        }
+    };
+
+    
+    for vol_name in get_volumes()? {
+        let dev_name = clip(&vol_name,"\\\\?\\", "\\");
+
+        println!("got dev_name: {}",dev_name);
+
+        for device in query_dos_device(Some(dev_name))? {
+            println!("  got dev_name: {}",device);
+        }
+    }    
     
     Ok(0)
 }
